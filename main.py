@@ -1,6 +1,6 @@
 """
 FastAPI Backend for Qwen Chat API
-Connects to your Hugging Face Model via Inference API
+Connects to your Hugging Face Space (Gradio-based)
 Run locally:  uvicorn main:app --reload
 Deployable on Render or any FastAPI-compatible host
 """
@@ -22,25 +22,28 @@ logger = logging.getLogger("qwen-backend")
 # -------------------------------------------------------------------
 # Configuration
 # -------------------------------------------------------------------
+# ✅ Use your actual Gradio Space endpoint, NOT the Inference API
 HF_SPACE_URL = os.getenv(
     "HF_SPACE_URL",
-    "https://api-inference.huggingface.co/models/Redhanuman/qwen-chat-api"
+    "https://redhanuman-qwen-chat-api.hf.space/run/predict"
 )
-HF_TOKEN = os.getenv("HF_TOKEN", "hf_yourRealTokenHere")
+
+# Optional Hugging Face Token (only needed if your Space is private)
+HF_TOKEN = os.getenv("HF_TOKEN", "")  # Keep empty for public Space
 
 # -------------------------------------------------------------------
 # FastAPI App
 # -------------------------------------------------------------------
 app = FastAPI(
     title="Qwen Chat Backend API",
-    description="Backend API for Qwen 2.5 Chat Model using Hugging Face Inference API",
-    version="1.1.0"
+    description="Backend API for Qwen 2.5 Chat Model via Hugging Face Space",
+    version="2.0.0"
 )
 
-# CORS (frontend can connect from any origin)
+# Enable CORS (Frontend Access)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change this in production
+    allow_origins=["*"],  # You can restrict this later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -49,10 +52,6 @@ app.add_middleware(
 # -------------------------------------------------------------------
 # Request / Response Models
 # -------------------------------------------------------------------
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
 class ChatRequest(BaseModel):
     message: str
     history: Optional[List[List[str]]] = []
@@ -84,13 +83,16 @@ async def root():
 # -------------------------------------------------------------------
 @app.get("/api/health")
 async def health_check():
-    """Check backend and HF API connection"""
+    """Check backend and Hugging Face Space connection"""
     try:
-        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        headers = {}
+        if HF_TOKEN:
+            headers["Authorization"] = f"Bearer {HF_TOKEN}"
+
         res = requests.post(
             HF_SPACE_URL,
             headers=headers,
-            json={"inputs": "test"},
+            json={"data": ["ping", []]},
             timeout=10
         )
 
@@ -124,29 +126,18 @@ async def health_check():
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Chat endpoint to send messages to the Qwen model
-    Example request:
-    {
-        "message": "Hello Qwen!",
-        "history": [["Hi", "Hello! How can I help?"]],
-        "max_length": 512,
-        "temperature": 0.7
-    }
+    Chat endpoint for sending messages to the Hugging Face Space.
     """
     try:
-        logger.info(f"Received chat message: {request.message[:80]}")
+        logger.info(f"Incoming chat message: {request.message[:80]}")
 
-        headers = {
-            "Authorization": f"Bearer {HF_TOKEN}",
-            "Content-Type": "application/json"
-        }
+        headers = {}
+        if HF_TOKEN:
+            headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
+        # 👇 This is how Gradio expects data
         payload = {
-            "inputs": request.message,
-            "parameters": {
-                "max_new_tokens": request.max_length,
-                "temperature": request.temperature
-            }
+            "data": [request.message, request.history]
         }
 
         response = requests.post(
@@ -157,25 +148,24 @@ async def chat(request: ChatRequest):
         )
 
         if response.status_code != 200:
-            logger.error(f"HF API returned error: {response.status_code}")
+            logger.error(f"Hugging Face Space error: {response.status_code}")
             raise HTTPException(
                 status_code=response.status_code,
-                detail=f"Hugging Face API error: {response.text}"
+                detail=f"HF Space returned error: {response.text}"
             )
 
         result = response.json()
-        logger.info(f"HF API raw output: {result}")
+        logger.info(f"HF Space raw result: {result}")
 
-        ai_response = ""
-        if isinstance(result, list) and len(result) > 0:
-            ai_response = result[0].get("generated_text", "")
-        elif isinstance(result, dict):
-            ai_response = result.get("generated_text", "")
+        # Extract AI response
+        ai_response = None
+        if "data" in result and len(result["data"]) > 0:
+            ai_response = result["data"][0]
 
         if not ai_response:
             raise HTTPException(
                 status_code=500,
-                detail="Empty response from Hugging Face model"
+                detail="Empty response from Hugging Face Space"
             )
 
         return ChatResponse(
@@ -197,14 +187,14 @@ async def chat(request: ChatRequest):
 @app.get("/api/stats")
 async def get_stats():
     return {
-        "model": "Redhanuman/qwen-chat-api",
+        "model": "Redhanuman/qwen-chat-api (Gradio Space)",
         "backend": "FastAPI",
-        "version": "1.1.0",
+        "version": "2.0.0",
         "status": "operational",
         "features": [
+            "Gradio Space integration",
             "Conversation history",
             "Temperature control",
-            "Error handling",
             "Health monitoring",
             "CORS enabled"
         ]
