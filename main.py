@@ -12,6 +12,12 @@ from typing import List, Optional
 import requests
 import os
 import logging
+from dotenv import load_dotenv  # ✅ NEW import
+
+# -------------------------------------------------------------------
+# Load environment variables
+# -------------------------------------------------------------------
+load_dotenv()  # ✅ Loads .env file
 
 # -------------------------------------------------------------------
 # Logging Setup
@@ -135,7 +141,7 @@ async def chat(request: ChatRequest):
         if HF_TOKEN:
             headers["Authorization"] = f"Bearer {HF_TOKEN}"
 
-        # 👇 This is how Gradio expects data
+        # 👇 Gradio expects this input format
         payload = {
             "data": [request.message, request.history]
         }
@@ -222,4 +228,4 @@ async def internal_error_handler(request, exc):
 # -------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", 8000)))
