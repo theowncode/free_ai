@@ -1,7 +1,8 @@
 """
 FastAPI Backend for Qwen Chat API
-Connects to your Hugging Face Space
-Run: uvicorn main:app --reload
+Connects to your Hugging Face Model via Inference API
+Run locally:  uvicorn main:app --reload
+Deployable on Render or any FastAPI-compatible host
 """
 
 from fastapi import FastAPI, HTTPException
@@ -9,32 +10,45 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import requests
+import os
 import logging
 
-# Setup logging
+# -------------------------------------------------------------------
+# Logging Setup
+# -------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("qwen-backend")
 
-# Initialize FastAPI app
+# -------------------------------------------------------------------
+# Configuration
+# -------------------------------------------------------------------
+HF_SPACE_URL = os.getenv(
+    "HF_SPACE_URL",
+    "https://api-inference.huggingface.co/models/Redhanuman/qwen-chat-api"
+)
+HF_TOKEN = os.getenv("HF_TOKEN", "hf_yourRealTokenHere")
+
+# -------------------------------------------------------------------
+# FastAPI App
+# -------------------------------------------------------------------
 app = FastAPI(
     title="Qwen Chat Backend API",
-    description="Backend API for Qwen 2.5 Chat Model",
-    version="1.0.0"
+    description="Backend API for Qwen 2.5 Chat Model using Hugging Face Inference API",
+    version="1.1.0"
 )
 
-# Enable CORS for frontend access
+# CORS (frontend can connect from any origin)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change to specific domains in production
+    allow_origins=["*"],  # Change this in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Your Hugging Face Space URL
-HF_SPACE_URL = "https://redhanuman-qwen-chat-api.hf.space/api/predict"
-
-# Request Models
+# -------------------------------------------------------------------
+# Request / Response Models
+# -------------------------------------------------------------------
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -50,10 +64,11 @@ class ChatResponse(BaseModel):
     success: bool
     message: Optional[str] = None
 
-# Health check endpoint
+# -------------------------------------------------------------------
+# Root Endpoint
+# -------------------------------------------------------------------
 @app.get("/")
 async def root():
-    """Root endpoint - API status"""
     return {
         "status": "online",
         "message": "Qwen Chat Backend API is running",
@@ -64,18 +79,22 @@ async def root():
         }
     }
 
+# -------------------------------------------------------------------
+# Health Check
+# -------------------------------------------------------------------
 @app.get("/api/health")
 async def health_check():
-    """Check if the API and HF Space are working"""
+    """Check backend and HF API connection"""
     try:
-        # Test connection to HF Space
-        response = requests.post(
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+        res = requests.post(
             HF_SPACE_URL,
-            json={"data": ["test", []]},
-            timeout=30
+            headers=headers,
+            json={"inputs": "test"},
+            timeout=10
         )
-        
-        if response.status_code == 200:
+
+        if res.status_code == 200:
             return {
                 "status": "healthy",
                 "backend": "online",
@@ -87,10 +106,11 @@ async def health_check():
                 "status": "degraded",
                 "backend": "online",
                 "hf_space": "error",
-                "error": f"Status code: {response.status_code}"
+                "error": f"Status code: {res.status_code}",
+                "text": res.text
             }
     except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
+        logger.error(f"Health check failed: {e}")
         return {
             "status": "unhealthy",
             "backend": "online",
@@ -98,125 +118,118 @@ async def health_check():
             "error": str(e)
         }
 
+# -------------------------------------------------------------------
+# Main Chat Endpoint
+# -------------------------------------------------------------------
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Main chat endpoint
-    
+    Chat endpoint to send messages to the Qwen model
     Example request:
     {
-        "message": "Hello! Who are you?",
+        "message": "Hello Qwen!",
         "history": [["Hi", "Hello! How can I help?"]],
         "max_length": 512,
         "temperature": 0.7
     }
     """
     try:
-        logger.info(f"Received chat request: {request.message[:50]}...")
-        
-        # Prepare request for HF Space
-        hf_request = {
-            "data": [
-                request.message,
-                request.history
-            ]
+        logger.info(f"Received chat message: {request.message[:80]}")
+
+        headers = {
+            "Authorization": f"Bearer {HF_TOKEN}",
+            "Content-Type": "application/json"
         }
-        
-        # Call Hugging Face Space API
+
+        payload = {
+            "inputs": request.message,
+            "parameters": {
+                "max_new_tokens": request.max_length,
+                "temperature": request.temperature
+            }
+        }
+
         response = requests.post(
             HF_SPACE_URL,
-            json=hf_request,
-            timeout=60  # 60 second timeout
+            headers=headers,
+            json=payload,
+            timeout=60
         )
-        
-        # Check response
-        if response.status_code == 200:
-            result = response.json()
-            ai_response = result.get('data', [None])[0]
-            
-            if ai_response:
-                logger.info("Chat response successful")
-                return ChatResponse(
-                    response=ai_response,
-                    success=True,
-                    message="Response generated successfully"
-                )
-            else:
-                logger.error("Empty response from HF Space")
-                raise HTTPException(
-                    status_code=500,
-                    detail="Received empty response from AI model"
-                )
-        else:
-            logger.error(f"HF Space returned status: {response.status_code}")
+
+        if response.status_code != 200:
+            logger.error(f"HF API returned error: {response.status_code}")
             raise HTTPException(
                 status_code=response.status_code,
-                detail=f"AI model returned error: {response.text}"
+                detail=f"Hugging Face API error: {response.text}"
             )
-            
+
+        result = response.json()
+        logger.info(f"HF API raw output: {result}")
+
+        ai_response = ""
+        if isinstance(result, list) and len(result) > 0:
+            ai_response = result[0].get("generated_text", "")
+        elif isinstance(result, dict):
+            ai_response = result.get("generated_text", "")
+
+        if not ai_response:
+            raise HTTPException(
+                status_code=500,
+                detail="Empty response from Hugging Face model"
+            )
+
+        return ChatResponse(
+            response=ai_response.strip(),
+            success=True,
+            message="Response generated successfully"
+        )
+
     except requests.exceptions.Timeout:
-        logger.error("Request timeout")
-        raise HTTPException(
-            status_code=504,
-            detail="Request timeout - AI model took too long to respond"
-        )
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error: {str(e)}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Failed to connect to AI model: {str(e)}"
-        )
+        logger.error("Timeout while waiting for Hugging Face response")
+        raise HTTPException(status_code=504, detail="Model timeout")
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+        logger.error(f"Chat processing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/chat/stream")
-async def chat_stream(request: ChatRequest):
-    """
-    Streaming chat endpoint (for future implementation)
-    Currently returns same as regular chat
-    """
-    return await chat(request)
-
+# -------------------------------------------------------------------
+# Stats Endpoint
+# -------------------------------------------------------------------
 @app.get("/api/stats")
 async def get_stats():
-    """Get API statistics"""
     return {
-        "model": "Qwen 2.5-1.5B-Instruct",
+        "model": "Redhanuman/qwen-chat-api",
         "backend": "FastAPI",
-        "hf_space": "redhanuman-qwen-chat-api",
-        "endpoints": {
-            "chat": "/api/chat",
-            "health": "/api/health",
-            "stats": "/api/stats"
-        },
+        "version": "1.1.0",
+        "status": "operational",
         "features": [
-            "Conversation history support",
-            "Configurable temperature",
+            "Conversation history",
+            "Temperature control",
             "Error handling",
-            "CORS enabled",
-            "Health monitoring"
+            "Health monitoring",
+            "CORS enabled"
         ]
     }
 
-# Error handlers
+# -------------------------------------------------------------------
+# Error Handlers
+# -------------------------------------------------------------------
 @app.exception_handler(404)
 async def not_found_handler(request, exc):
     return {
         "error": "Endpoint not found",
-        "message": "Please check the API documentation at /docs"
+        "message": "See API docs at /docs"
     }
 
 @app.exception_handler(500)
 async def internal_error_handler(request, exc):
     return {
         "error": "Internal server error",
-        "message": "Something went wrong. Please try again later."
+        "message": str(exc)
     }
 
+# -------------------------------------------------------------------
+# Entrypoint
+# -------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
