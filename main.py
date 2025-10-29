@@ -11,7 +11,6 @@ logger = logging.getLogger("qwen-backend")
 
 app = FastAPI(
     title="Qwen Chat Backend API",
-    description="Backend API for Qwen 2.5 Chat via Gradio Client",
     version="3.0.0"
 )
 
@@ -25,13 +24,19 @@ app.add_middleware(
 
 # Initialize Gradio Client
 HF_SPACE_NAME = "Redhanuman/qwen-chat-api"
-HF_TOKEN = os.getenv("HF_TOKEN", "")  # Optional for public spaces
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 try:
     if HF_TOKEN:
         client = Client(HF_SPACE_NAME, hf_token=HF_TOKEN)
     else:
         client = Client(HF_SPACE_NAME)
+    
+    # View API info at startup
+    logger.info("="*60)
+    logger.info("GRADIO API DOCUMENTATION:")
+    logger.info("="*60)
+    client.view_api()
     logger.info(f"✅ Connected to {HF_SPACE_NAME}")
 except Exception as e:
     logger.error(f"❌ Failed to connect: {e}")
@@ -50,56 +55,47 @@ class ChatResponse(BaseModel):
 async def root():
     return {
         "status": "online",
-        "message": "Qwen Chat Backend API (Gradio Client)",
-        "space": HF_SPACE_NAME
+        "space": HF_SPACE_NAME,
+        "message": "Use /api/chat to send messages"
     }
 
 @app.get("/api/health")
 async def health_check():
     if client is None:
-        return {
-            "status": "unhealthy",
-            "error": "Gradio client not initialized"
-        }
+        return {"status": "unhealthy", "error": "Client not initialized"}
     
     try:
-        # Test with a simple ping
-        result = client.predict("ping", [], api_name="/chat")
+        # Simple test call
+        result = client.predict("ping", api_name="/chat")
         return {
             "status": "healthy",
             "space": HF_SPACE_NAME,
             "connected": True
         }
     except Exception as e:
-        return {
-            "status": "degraded",
-            "error": str(e)
-        }
+        return {"status": "degraded", "error": str(e)}
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     if client is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Gradio client not available"
-        )
+        raise HTTPException(status_code=503, detail="Client unavailable")
     
     try:
         logger.info(f"Message: {request.message[:50]}...")
         
-        # Call Gradio Space using gradio_client
+        # ✅ Pass parameters as positional arguments, not keyword args
         result = client.predict(
-            message=request.message,
-            history=request.history,
-            api_name="/chat"  # ChatInterface default endpoint
+            request.message,      # arg_0: message
+            request.history,      # arg_1: history
+            api_name="/chat"
         )
         
-        logger.info(f"Response received: {str(result)[:50]}...")
+        logger.info(f"Response: {str(result)[:50]}...")
         
         return ChatResponse(
             response=result,
             success=True,
-            message="Response generated"
+            message="Success"
         )
         
     except Exception as e:
