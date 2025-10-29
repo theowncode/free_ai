@@ -4,3 +4,4 @@ pydantic==2.12.3
 requests==2.32.5
 python-multipart==0.0.20
 python-dotenv
+gradio-client
