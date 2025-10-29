@@ -4,47 +4,46 @@ from pydantic import BaseModel
 from typing import List, Optional
 from gradio_client import Client
 import logging
-import os
+import asyncio
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("qwen-backend")
 
-app = FastAPI(
-    title="Qwen Chat Backend API",
-    version="3.0.0"
-)
+app = FastAPI(title="Qwen Chat Backend API", version="3.2.0")
 
+# Fix CORS to allow OPTIONS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],  # Explicitly add OPTIONS
     allow_headers=["*"],
+    expose_headers=["*"]
 )
 
-# Initialize Gradio Client
-HF_SPACE_NAME = "Redhanuman/qwen-chat-api"
-HF_TOKEN = os.getenv("HF_TOKEN", "")
+SPACE_NAME = "Redhanuman/qwen-chat-api"
+client = None
 
 try:
-    if HF_TOKEN:
-        client = Client(HF_SPACE_NAME, hf_token=HF_TOKEN)
-    else:
-        client = Client(HF_SPACE_NAME)
+    client = Client(SPACE_NAME)
+    logger.info(f"✅ Connected to {SPACE_NAME}")
     
-    # View API info at startup
+    # View API at startup
     logger.info("="*60)
-    logger.info("GRADIO API DOCUMENTATION:")
+    logger.info("GRADIO API STRUCTURE:")
     logger.info("="*60)
     client.view_api()
-    logger.info(f"✅ Connected to {HF_SPACE_NAME}")
+    
 except Exception as e:
-    logger.error(f"❌ Failed to connect: {e}")
-    client = None
+    logger.error(f"❌ Connection failed: {e}")
+
+class Message(BaseModel):
+    role: str
+    content: str
 
 class ChatRequest(BaseModel):
     message: str
-    history: Optional[List[List[str]]] = []
+    history: Optional[List[Message]] = []
 
 class ChatResponse(BaseModel):
     response: str
@@ -55,42 +54,43 @@ class ChatResponse(BaseModel):
 async def root():
     return {
         "status": "online",
-        "space": HF_SPACE_NAME,
-        "message": "Use /api/chat to send messages"
+        "message": "Qwen Chat Backend API",
+        "space": SPACE_NAME,
+        "endpoints": {
+            "chat": "/api/chat",
+            "health": "/api/health"
+        }
     }
 
 @app.get("/api/health")
-async def health_check():
-    if client is None:
+async def health():
+    if not client:
         return {"status": "unhealthy", "error": "Client not initialized"}
     
     try:
-        # Simple test call
-        result = client.predict("ping", api_name="/chat")
-        return {
-            "status": "healthy",
-            "space": HF_SPACE_NAME,
-            "connected": True
-        }
+        result = client.predict("test", api_name="/chat")
+        return {"status": "healthy", "space": SPACE_NAME, "connected": True}
     except Exception as e:
         return {"status": "degraded", "error": str(e)}
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    if client is None:
-        raise HTTPException(status_code=503, detail="Client unavailable")
+async def chat(req: ChatRequest):
+    if not client:
+        raise HTTPException(503, "Service unavailable")
     
     try:
-        logger.info(f"Message: {request.message[:50]}...")
+        logger.info(f"📩 Received: {req.message[:50]}...")
         
-        # ✅ Pass parameters as positional arguments, not keyword args
-        result = client.predict(
-            request.message,      # arg_0: message
-            request.history,      # arg_1: history
+        # Use submit() + result() for proper queue handling
+        job = client.submit(
+            req.message,
             api_name="/chat"
         )
         
-        logger.info(f"Response: {str(result)[:50]}...")
+        # Wait for result (blocks until complete)
+        result = job.result()
+        
+        logger.info(f"📤 Response: {str(result)[:100]}...")
         
         return ChatResponse(
             response=result,
@@ -99,8 +99,8 @@ async def chat(request: ChatRequest):
         )
         
     except Exception as e:
-        logger.error(f"Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ Error: {str(e)}")
+        raise HTTPException(500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
