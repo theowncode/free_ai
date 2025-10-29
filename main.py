@@ -25,7 +25,7 @@ logger = logging.getLogger("qwen-backend")
 # ✅ Use your actual Gradio Space endpoint, NOT the Inference API
 HF_SPACE_URL = os.getenv(
     "HF_SPACE_URL",
-    "https://redhanuman-qwen-chat-api.hf.space/run/predict"
+    "https://Redhanuman-qwen-chat-api.hf.space/api/predict/"
 )
 
 # Optional Hugging Face Token (only needed if your Space is private)
